@@ -3,6 +3,8 @@ use crate::{data::build_partial_entry, Error, Hash};
 use super::{ext::BoolExt, ext::ReadExt, Compression, Version, VersionMajor};
 use byteorder::{ReadBytesExt, WriteBytesExt, LE};
 use std::io;
+use crate::global::get_game_id;
+use crate::global::GAME_ID_VISIONS_OF_MANA;
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub(crate) enum EntryLocation {
@@ -37,9 +39,13 @@ fn align(offset: u64) -> u64 {
 }
 
 fn compression_index_size(version: Version) -> CompressionIndexSize {
-    match version {
-        Version::V8A => CompressionIndexSize::U8,
-        _ => CompressionIndexSize::U32,
+    match get_game_id(None).as_deref() {
+        Some(GAME_ID_VISIONS_OF_MANA) => CompressionIndexSize::U8,
+        _ =>
+          match version {
+              Version::V8A => CompressionIndexSize::U8,
+              _ => CompressionIndexSize::U32,
+          }
     }
 }
 

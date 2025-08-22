@@ -10,6 +10,8 @@ use path_slash::PathExt;
 use rayon::prelude::*;
 use strum::VariantNames;
 
+use {repak::global::get_game_id};
+
 #[derive(Parser, Debug)]
 struct ActionInfo {
     /// Input .pak path
@@ -150,6 +152,10 @@ struct Args {
     #[arg(short, long)]
     aes_key: Option<AesKey>,
 
+    /// The game identifier: <GAME_ID>/Content/Paks (e.g., SB for Stellar Blade)
+    #[arg(short, long)]
+    game_id: Option<String>,
+
     #[command(subcommand)]
     action: Action,
 }
@@ -178,7 +184,7 @@ impl std::str::FromStr for AesKey {
 fn main() -> Result<(), repak::Error> {
     let args = Args::parse();
     let aes_key = args.aes_key.map(|k| k.0);
-
+    get_game_id(args.game_id);
     match args.action {
         Action::Info(action) => info(aes_key, action),
         Action::List(action) => list(aes_key, action),
