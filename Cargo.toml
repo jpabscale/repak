@@ -6,7 +6,7 @@ members = ["repak", "repak_cli"]
 repository = "https://github.com/jpabscale/repak"
 authors = ["spuds", "trumank"]
 license = "MIT OR Apache-2.0"
-version = "0.2.3-pre.2"
+version = "0.2.3-pre.3"
 edition = "2021"
 keywords = ["unreal-engine", "pak", "unrealpak"]
 
@@ -16,19 +16,6 @@ base64 = "0.22.1"
 strum = { version = "0.27.2", features = ["derive"] }
 sha1 = "0.10"
 hex = "0.4"
-
-# Config for 'dist'
-[workspace.metadata.dist]
-# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
-cargo-dist-version = "0.29.0"
-# CI backends to support
-ci = "github"
-# The installers to generate for each app
-installers = []
-# Target platforms to build apps for (Rust target-triple syntax)
-targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
-# Which actions to run on pull requests
-pr-run-mode = "plan"
 
 # The profile that 'cargo dist' will build with
 [profile.dist]

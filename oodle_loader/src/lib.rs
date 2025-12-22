@@ -1,4 +1,4 @@
-use std::{io::Read, sync::OnceLock};
+use std::sync::OnceLock;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -58,6 +58,7 @@ mod oodle_lz {
         HyperFast4 = -4,
     }
 
+    #[allow(non_snake_case)]
     pub type Compress = unsafe extern "system" fn(
         compressor: Compressor,
         rawBuf: *const u8,
@@ -71,6 +72,7 @@ mod oodle_lz {
         scratchSize: usize,
     ) -> isize;
 
+    #[allow(non_snake_case)]
     pub type Decompress = unsafe extern "system" fn(
         compBuf: *const u8,
         compBufSize: usize,
@@ -88,6 +90,7 @@ mod oodle_lz {
         threadPhase: u32,
     ) -> isize;
 
+    #[allow(non_snake_case)]
     pub type GetCompressedBufferSizeNeeded =
         unsafe extern "system" fn(compressor: Compressor, rawSize: usize) -> usize;
 
@@ -185,11 +188,7 @@ fn check_hash(buffer: &[u8]) -> Result<()> {
 fn fetch_oodle() -> Result<std::path::PathBuf> {
     let oodle_path = std::env::current_exe()?.with_file_name(OODLE_PLATFORM.name);
     if !oodle_path.exists() {
-        let mut buffer = vec![];
-        ureq::get(&url())
-            .call()?
-            .into_reader()
-            .read_to_end(&mut buffer)?;
+        let buffer = ureq::get(&url()).call()?.into_body().read_to_vec()?;
         check_hash(&buffer)?;
         std::fs::write(&oodle_path, buffer)?;
     }
