@@ -69,21 +69,18 @@ impl<D: AsRef<[u8]>> PartialEntry<D> {
         file_offset: u64,
     ) -> Result<Entry> {
         #[cfg(feature = "compression")]
-        let compression_slot = {
-            let empty = match &self.data {
-                PartialEntryData::Slice(s) => s.as_ref().is_empty(),
-                PartialEntryData::Blocks(blocks) => blocks.is_empty(),
-            };
-            if empty {
-                None
-            } else {
-                self.compression
-                    .map(|c| get_compression_slot(version, compression_slots, c))
-                    .transpose()?
-            }
-        };
+        let compression_slot = self
+            .compression
+            .map(|c| get_compression_slot(version, compression_slots, c))
+            .transpose()?;
         #[cfg(not(feature = "compression"))]
         let compression_slot = None;
+
+        assert!(
+            compression_slot.is_none()
+                || !matches!(&self.data, PartialEntryData::Blocks(b) if b.is_empty()),
+            "compressed entry must have at least one block"
+        );
 
         let blocks = match &self.data {
             PartialEntryData::Slice(_) => None,
@@ -148,8 +145,13 @@ where
     use sha1::{Digest, Sha1};
     let mut hasher = Sha1::new();
 
-    // TODO possibly select best compression based on some criteria instead of picking first
-    let compression = allowed_compression.first().cloned();
+    // Empty data cannot be compressed (would produce empty blocks causing decompression failures)
+    let compression = if data.as_ref().is_empty() {
+        None
+    } else {
+        // TODO possibly select best compression based on some criteria instead of picking first
+        allowed_compression.first().cloned()
+    };
     let uncompressed_size = data.as_ref().len() as u64;
     let compression_block_size;
 

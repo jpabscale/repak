@@ -299,3 +299,110 @@ matrix_test!(
     ("", /*"_encryptindex"*/),
     test_rewrite_index
 );
+
+mod roundtrip {
+    use std::io::Cursor;
+
+    const FILE_CONTENTS: &[(&str, &[u8])] = &[
+        ("hello.txt", b"Hello, world!"),
+        ("empty.txt", b""),
+        ("large.bin", &[0xAB; 4096]),
+        ("dir/nested.txt", b"nested file content"),
+    ];
+
+    fn roundtrip(version: repak::Version, compression: Option<repak::Compression>) {
+        let allowed_compression: Vec<repak::Compression> = compression.into_iter().collect();
+
+        let writer = Cursor::new(vec![]);
+        let mut builder = repak::PakBuilder::new();
+        if !allowed_compression.is_empty() {
+            builder = builder.compression(allowed_compression);
+        }
+        let mut pak_writer = builder.writer(writer, version, "../../../".to_string(), Some(0));
+
+        for (path, data) in FILE_CONTENTS {
+            pak_writer
+                .write_file(path, compression.is_some(), *data)
+                .unwrap();
+        }
+
+        let buf = pak_writer.write_index().unwrap().into_inner();
+
+        let mut reader = Cursor::new(&buf);
+        let pak_reader = repak::PakBuilder::new().reader(&mut reader).unwrap();
+
+        assert_eq!(pak_reader.version(), version);
+        assert_eq!(pak_reader.mount_point(), "../../../");
+
+        let mut files: Vec<String> = pak_reader.files();
+        files.sort();
+        let mut expected: Vec<String> = FILE_CONTENTS.iter().map(|(p, _)| p.to_string()).collect();
+        expected.sort();
+        assert_eq!(files, expected);
+
+        for (path, expected_data) in FILE_CONTENTS {
+            let data = pak_reader.get(path, &mut reader).unwrap();
+            assert_eq!(
+                data, *expected_data,
+                "mismatched content for {} with version {:?} compression {:?}",
+                path, version, compression,
+            );
+        }
+    }
+
+    macro_rules! roundtrip_tests {
+        (pre_fname: $($version:ident),+ $(,)?) => {
+            $(
+                paste::paste! {
+                    #[test]
+                    fn [< roundtrip_ $version:lower _none >]() {
+                        roundtrip(repak::Version::$version, None);
+                    }
+
+                    #[test]
+                    fn [< roundtrip_ $version:lower _zlib >]() {
+                        roundtrip(repak::Version::$version, Some(repak::Compression::Zlib));
+                    }
+
+                    #[test]
+                    fn [< roundtrip_ $version:lower _gzip >]() {
+                        roundtrip(repak::Version::$version, Some(repak::Compression::Gzip));
+                    }
+                }
+            )+
+        };
+        (fname: $($version:ident),+ $(,)?) => {
+            $(
+                paste::paste! {
+                    #[test]
+                    fn [< roundtrip_ $version:lower _none >]() {
+                        roundtrip(repak::Version::$version, None);
+                    }
+
+                    #[test]
+                    fn [< roundtrip_ $version:lower _zlib >]() {
+                        roundtrip(repak::Version::$version, Some(repak::Compression::Zlib));
+                    }
+
+                    #[test]
+                    fn [< roundtrip_ $version:lower _gzip >]() {
+                        roundtrip(repak::Version::$version, Some(repak::Compression::Gzip));
+                    }
+
+                    #[test]
+                    fn [< roundtrip_ $version:lower _zstd >]() {
+                        roundtrip(repak::Version::$version, Some(repak::Compression::Zstd));
+                    }
+
+                    #[test]
+                    fn [< roundtrip_ $version:lower _lz4 >]() {
+                        roundtrip(repak::Version::$version, Some(repak::Compression::LZ4));
+                    }
+                }
+            )+
+        };
+    }
+
+    roundtrip_tests!(pre_fname: V5, V7);
+    roundtrip_tests!(fname: V8A, V8B, V9, V11);
+}
