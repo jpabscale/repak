@@ -1,4 +1,5 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
+use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter};
 use std::path::{Path, PathBuf};
@@ -44,8 +45,8 @@ struct ActionHashList {
 
 #[derive(Parser, Debug)]
 struct ActionUnpack {
-    /// Input .pak path
-    #[arg(index = 1)]
+    /// Input .pak path or OS-native path-separated list. Earlier inputs have priority.
+    #[arg(index = 1, action = clap::ArgAction::Append, short, long)]
     input: Vec<String>,
 
     /// Output directory. Defaults to next to input pak
@@ -324,44 +325,54 @@ impl Output {
 }
 
 fn unpack(aes_key: Option<aes::Aes256>, action: ActionUnpack) -> Result<(), repak::Error> {
-    for input in &action.input {
+    let inputs = action
+        .input
+        .iter()
+        .flat_map(|input| std::env::split_paths(OsStr::new(input)))
+        .collect::<Vec<_>>();
+    if inputs.is_empty() {
+        return Ok(());
+    }
+
+    let output = action
+        .output
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| inputs[0].with_extension(""));
+    match fs::create_dir(&output) {
+        Ok(_) => Ok(()),
+        Err(ref e) if action.output.is_some() && e.kind() == std::io::ErrorKind::AlreadyExists => {
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }?;
+    if action.output.is_none() && !action.force && output.read_dir()?.next().is_some() {
+        return Err(repak::Error::OutputNotEmpty(
+            output.to_string_lossy().to_string(),
+        ));
+    }
+
+    struct UnpackEntry {
+        entry_path: String,
+        out_path: PathBuf,
+        out_dir: PathBuf,
+    }
+
+    let prefix = Path::new(&action.strip_prefix);
+    let mut selected_paths = HashSet::new();
+    let mut entries_by_input = Vec::with_capacity(inputs.len());
+
+    for input in &inputs {
         let mut builder = repak::PakBuilder::new();
         if let Some(aes_key) = aes_key.clone() {
             builder = builder.key(aes_key);
         }
         let pak = builder.reader(&mut BufReader::new(File::open(input)?))?;
-        let output = action
-            .output
-            .as_ref()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| Path::new(input).with_extension(""));
-        match fs::create_dir(&output) {
-            Ok(_) => Ok(()),
-            Err(ref e)
-                if action.output.is_some() && e.kind() == std::io::ErrorKind::AlreadyExists =>
-            {
-                Ok(())
-            }
-            Err(e) => Err(e),
-        }?;
-        if action.output.is_none() && !action.force && output.read_dir()?.next().is_some() {
-            return Err(repak::Error::OutputNotEmpty(
-                output.to_string_lossy().to_string(),
-            ));
-        }
         let mount_point = PathBuf::from(pak.mount_point());
-        let prefix = Path::new(&action.strip_prefix);
-
-        struct UnpackEntry {
-            entry_path: String,
-            out_path: PathBuf,
-            out_dir: PathBuf,
-        }
-
         let entries = pak
             .files()
             .into_iter()
-            .map(|entry_path| {
+            .filter_map(|entry_path| {
                 let full_path = mount_point.join(&entry_path);
                 if !action.include.is_empty() {
                     if let Ok(stripped) = full_path.strip_prefix(prefix) {
@@ -380,50 +391,69 @@ fn unpack(aes_key: Option<aes::Aes256>, action: ActionUnpack) -> Result<(), repa
                                         || i.matches_path_with(&a.join(""), options)
                                 })
                         }) {
-                            return Ok(None);
+                            return None;
                         }
                     } else {
-                        return Ok(None);
+                        return None;
                     }
                 }
-                let out_path = output
-                    .join(full_path.strip_prefix(prefix).map_err(|_| {
-                        repak::Error::PrefixMismatch {
+                let stripped = match full_path.strip_prefix(prefix) {
+                    Ok(stripped) => stripped,
+                    Err(_) => {
+                        return Some(Err(repak::Error::PrefixMismatch {
                             path: full_path.to_string_lossy().to_string(),
                             prefix: prefix.to_string_lossy().to_string(),
-                        }
-                    })?)
-                    .clean();
+                        }));
+                    }
+                };
+                let out_path = output.join(stripped).clean();
 
                 if !out_path.starts_with(&output) {
-                    return Err(repak::Error::WriteOutsideOutput(
+                    return Some(Err(repak::Error::WriteOutsideOutput(
                         out_path.to_string_lossy().to_string(),
-                    ));
+                    )));
+                }
+
+                // Filtering happens before this claim. An excluded entry in
+                // an earlier input therefore does not shadow a later one.
+                if !selected_paths.insert(out_path.clone()) {
+                    return None;
                 }
 
                 let out_dir = out_path.parent().expect("will be a file").to_path_buf();
-
-                Ok(Some(UnpackEntry {
+                Some(Ok(UnpackEntry {
                     entry_path,
                     out_path,
                     out_dir,
                 }))
             })
-            .filter_map(|e| e.transpose())
             .collect::<Result<Vec<_>, repak::Error>>()?;
+        entries_by_input.push(entries);
+    }
 
-        let progress = (!action.quiet).then(|| {
-            indicatif::ProgressBar::new(entries.len() as u64)
-                .with_style(indicatif::ProgressStyle::with_template(STYLE).unwrap())
-        });
-        let log = match &progress {
-            Some(progress) => Output::Progress(progress.clone()),
-            None => Output::Stdout,
-        };
+    let total_entries = entries_by_input.iter().map(Vec::len).sum::<usize>();
+    let progress = (!action.quiet).then(|| {
+        indicatif::ProgressBar::new(total_entries as u64)
+            .with_style(indicatif::ProgressStyle::with_template(STYLE).unwrap())
+    });
+    let log = match &progress {
+        Some(progress) => Output::Progress(progress.clone()),
+        None => Output::Stdout,
+    };
 
+    for (input, entries) in inputs.iter().zip(entries_by_input) {
+        if entries.is_empty() {
+            continue;
+        }
+        let mut builder = repak::PakBuilder::new();
+        if let Some(aes_key) = aes_key.clone() {
+            builder = builder.key(aes_key);
+        }
+        let mut pak_file = BufReader::new(File::open(input)?);
+        let pak = builder.reader(&mut pak_file)?;
         entries.par_iter().try_for_each_init(
-            || (progress.clone(), File::open(input)),
-            |(progress, file), entry| -> Result<(), repak::Error> {
+            || File::open(input),
+            |file, entry| -> Result<(), repak::Error> {
                 if action.verbose {
                     log.println(format!("unpacking {}", entry.entry_path));
                 }
@@ -436,24 +466,24 @@ fn unpack(aes_key: Option<aes::Aes256>, action: ActionUnpack) -> Result<(), repa
                     ),
                     &mut fs::File::create(&entry.out_path)?,
                 )?;
-                if let Some(progress) = progress {
+                if let Some(progress) = &progress {
                     progress.inc(1);
                 }
                 Ok(())
             },
         )?;
-        if let Some(progress) = progress {
-            progress.finish();
-        }
+    }
+    if let Some(progress) = progress {
+        progress.finish();
+    }
 
-        if !action.quiet {
-            println!(
-                "Unpacked {} files to {} from {}",
-                entries.len(),
-                output.display(),
-                input
-            );
-        }
+    if !action.quiet {
+        println!(
+            "Unpacked {} files to {} from {} inputs",
+            total_entries,
+            output.display(),
+            inputs.len()
+        );
     }
 
     Ok(())
